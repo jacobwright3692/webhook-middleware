@@ -1,0 +1,24 @@
+{
+  "name": "webhook-middleware-agent",
+  "version": "1.0.0",
+  "description": "Backend webhook intake service for normalizing lead payloads and forwarding them to a CRM webhook.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "webhook",
+    "express",
+    "middleware",
+    "crm",
+    "leads"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
