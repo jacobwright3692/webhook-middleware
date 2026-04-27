@@ -164,6 +164,111 @@ function normalizeLeadPayload(rawPayload) {
     return safeValue;
   };
 
+  const toTitleCase = (value) =>
+    toSafeString(value)
+      .toLowerCase()
+      .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+
+  const isSpeedToLeadPayload = (value) => {
+    if (value === null || value === undefined) {
+      return false;
+    }
+
+    if (Array.isArray(value)) {
+      return value.some((item) => isSpeedToLeadPayload(item));
+    }
+
+    if (typeof value === "object") {
+      return Object.entries(value).some(([key, entryValue]) => {
+        const normalizedKey = normalizeKey(key);
+        const sourceLikeKey = [
+          "source",
+          "leadsource",
+          "provider",
+          "marketplace",
+          "contactsource",
+          "vendor",
+          "leadvendor",
+          "leadprovider",
+          "company",
+          "campaignsource",
+        ].includes(normalizedKey);
+
+        if (sourceLikeKey && isSpeedToLeadPayload(entryValue)) {
+          return true;
+        }
+
+        return entryValue !== null && typeof entryValue === "object"
+          ? isSpeedToLeadPayload(entryValue)
+          : false;
+      });
+    }
+
+    return normalizeKey(value).includes("speedtolead");
+  };
+
+  const splitFullAddress = (address) => {
+    const addressParts = toSafeString(address)
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const street = addressParts.length >= 3 ? addressParts.slice(0, -2).join(", ") : "";
+    const city = addressParts.length >= 3 ? addressParts[addressParts.length - 2] : "";
+    const statePostal = addressParts.length >= 2 ? addressParts[addressParts.length - 1] : "";
+    const statePostalMatch = statePostal.match(/^([A-Za-z]{2})(?:\s+(\d{5}(?:-\d{4})?))?$/);
+
+    if (!street || !city || !statePostalMatch) {
+      return null;
+    }
+
+    return {
+      street,
+      city,
+      state: statePostalMatch[1].toUpperCase(),
+      postal_code: statePostalMatch[2] || "",
+    };
+  };
+
+  const findFirstValueByKeys = (value, keys) => {
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const foundValue = findFirstValueByKeys(item, keys);
+
+        if (foundValue) {
+          return foundValue;
+        }
+      }
+
+      return "";
+    }
+
+    if (typeof value !== "object") {
+      return "";
+    }
+
+    for (const [key, entryValue] of Object.entries(value)) {
+      if (keys.has(normalizeKey(key))) {
+        const safeValue = toSafeString(entryValue);
+
+        if (safeValue) {
+          return safeValue;
+        }
+      }
+
+      const foundValue = findFirstValueByKeys(entryValue, keys);
+
+      if (foundValue) {
+        return foundValue;
+      }
+    }
+
+    return "";
+  };
+
   const preserveUnmappedValue = (key, value) => {
     if (!Object.prototype.hasOwnProperty.call(normalized.unmapped_data, key)) {
       normalized.unmapped_data[key] = value;
@@ -283,6 +388,40 @@ function normalizeLeadPayload(rawPayload) {
   if (!normalized.structured_data.contact_source && hasPropertyLeadsSignature(rawPayload)) {
     normalized.structured_data.contact_source = "Property Leads";
     normalized.structured_data.source = "Property Leads";
+  }
+
+  const isSpeedToLead = isSpeedToLeadPayload(rawPayload);
+
+  if (isSpeedToLead) {
+    normalized.structured_data.contact_source = "Speed to Lead";
+    normalized.structured_data.source = "Speed to Lead";
+
+    if (!normalized.structured_data.property_address) {
+      normalized.structured_data.property_address = findFirstValueByKeys(
+        rawPayload,
+        new Set(["street", "streetaddress", "address1", "addressline1"])
+      );
+    }
+
+    if (normalized.structured_data.city) {
+      normalized.structured_data.city = toTitleCase(normalized.structured_data.city);
+    }
+
+    const parsedAddress = splitFullAddress(normalized.structured_data.property_address);
+
+    if (parsedAddress) {
+      normalized.structured_data.property_address = parsedAddress.street;
+
+      if (!normalized.structured_data.city) {
+        normalized.structured_data.city = toTitleCase(parsedAddress.city);
+      }
+      if (!normalized.structured_data.state) {
+        normalized.structured_data.state = parsedAddress.state;
+      }
+      if (!normalized.structured_data.postal_code && parsedAddress.postal_code) {
+        normalized.structured_data.postal_code = parsedAddress.postal_code;
+      }
+    }
   }
 
   if (
@@ -470,9 +609,44 @@ async function forwardToCRM(normalizedPayload) {
   collectRawNoteDetails(normalizedPayload.raw_webhook_payload);
 
   const notesLines = ["Inbound Lead Details:"];
+  const isSpeedToLeadNormalized = structuredData.contact_source === "Speed to Lead";
+  const speedToLeadAddressKeys = new Set([
+    "address",
+    "propertyaddress",
+    "property_address",
+    "street",
+    "streetaddress",
+    "street_address",
+    "city",
+    "state",
+    "postal",
+    "postalcode",
+    "postal_code",
+    "zip",
+    "zipcode",
+    "zip_code",
+  ]);
+  const speedToLeadAddressValues = new Set(
+    [
+      structuredData.property_address,
+      structuredData.city,
+      structuredData.state,
+      structuredData.postal_code,
+    ]
+      .map((value) => normalizeNoteValue(value))
+      .filter(Boolean)
+  );
 
   noteDetails.forEach((value, key) => {
     if (isLowValueNote(value)) {
+      return;
+    }
+
+    if (
+      isSpeedToLeadNormalized &&
+      (speedToLeadAddressKeys.has(String(key).toLowerCase().replace(/[^a-z0-9]/g, "")) ||
+        speedToLeadAddressValues.has(normalizeNoteValue(value)))
+    ) {
       return;
     }
 
