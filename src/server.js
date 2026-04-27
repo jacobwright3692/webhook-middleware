@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 3000;
 const CRM_WEBHOOK_URL = process.env.CRM_WEBHOOK_URL;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
   const startedAt = Date.now();
@@ -45,8 +46,15 @@ function normalizeLeadPayload(rawPayload) {
   const fieldMap = {
     name: "name",
     full_name: "name",
+    fullname: "name",
+    first_name: "first_name",
+    firstname: "first_name",
+    last_name: "last_name",
+    lastname: "last_name",
     phone: "phone",
     phone_number: "phone",
+    primary_phone: "phone",
+    primaryphone: "phone",
     mobile: "phone",
     cell: "phone",
     contact_phone: "phone",
@@ -68,6 +76,12 @@ function normalizeLeadPayload(rawPayload) {
     provider: "contact_source",
     marketplace: "contact_source",
     contact_source: "contact_source",
+    vendor: "contact_source",
+    lead_vendor: "contact_source",
+    leadprovider: "contact_source",
+    lead_provider: "contact_source",
+    company: "contact_source",
+    campaign_source: "contact_source",
     city: "city",
     state: "state",
     postal: "postal_code",
@@ -75,6 +89,21 @@ function normalizeLeadPayload(rawPayload) {
     zip: "postal_code",
     zip_code: "postal_code",
   };
+  const nameParts = {
+    first_name: "",
+    last_name: "",
+  };
+
+  const normalizeKey = (key) => String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  const propertyLeadsSignatureKeys = new Set([
+    "leadid",
+    "leadcost",
+    "datecreated",
+    "primaryphone",
+    "firstname",
+    "lastname",
+  ]);
 
   const toSafeString = (value) => {
     if (value === null || value === undefined) {
@@ -112,6 +141,29 @@ function normalizeLeadPayload(rawPayload) {
     return safeValue;
   };
 
+  const normalizeContactSource = (value) => {
+    const safeValue = toSafeString(value);
+    const comparableValue = safeValue.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    if (["", "na", "none", "noanswer", "notanswered", "unknown"].includes(comparableValue)) {
+      return "";
+    }
+
+    if (comparableValue === "propertyleads") {
+      return "Property Leads";
+    }
+
+    if (comparableValue === "leadzolo") {
+      return "Lead Zolo";
+    }
+
+    if (comparableValue === "speedtolead") {
+      return "Speed to Lead";
+    }
+
+    return safeValue;
+  };
+
   const preserveUnmappedValue = (key, value) => {
     if (!Object.prototype.hasOwnProperty.call(normalized.unmapped_data, key)) {
       normalized.unmapped_data[key] = value;
@@ -128,9 +180,23 @@ function normalizeLeadPayload(rawPayload) {
   const tryMapField = (key, value) => {
     const structuredField = fieldMap[String(key).toLowerCase()];
     const safeValue =
-      structuredField === "phone" ? normalizePhone(value) : toSafeString(value);
+      structuredField === "phone"
+        ? normalizePhone(value)
+        : structuredField === "contact_source"
+          ? normalizeContactSource(value)
+          : toSafeString(value);
 
     if (!structuredField || !safeValue) {
+      preserveUnmappedValue(key, value);
+      return;
+    }
+
+    if (structuredField === "first_name" || structuredField === "last_name") {
+      if (!nameParts[structuredField]) {
+        nameParts[structuredField] = safeValue;
+        return;
+      }
+
       preserveUnmappedValue(key, value);
       return;
     }
@@ -189,6 +255,35 @@ function normalizeLeadPayload(rawPayload) {
   };
 
   walkPayload(rawPayload);
+
+  if (!normalized.structured_data.name && (nameParts.first_name || nameParts.last_name)) {
+    normalized.structured_data.name = [nameParts.first_name, nameParts.last_name]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  const hasPropertyLeadsSignature = (value) => {
+    if (value === null || value === undefined || typeof value !== "object") {
+      return false;
+    }
+
+    if (Array.isArray(value)) {
+      return value.some((item) => hasPropertyLeadsSignature(item));
+    }
+
+    return Object.entries(value).some(([key, entryValue]) => {
+      if (propertyLeadsSignatureKeys.has(normalizeKey(key))) {
+        return true;
+      }
+
+      return hasPropertyLeadsSignature(entryValue);
+    });
+  };
+
+  if (!normalized.structured_data.contact_source && hasPropertyLeadsSignature(rawPayload)) {
+    normalized.structured_data.contact_source = "Property Leads";
+    normalized.structured_data.source = "Property Leads";
+  }
 
   if (
     normalized.structured_data.property_address &&
@@ -254,8 +349,15 @@ async function forwardToCRM(normalizedPayload) {
   const directFieldAliases = new Set([
     "name",
     "full_name",
+    "fullname",
+    "first_name",
+    "firstname",
+    "last_name",
+    "lastname",
     "phone",
     "phone_number",
+    "primary_phone",
+    "primaryphone",
     "mobile",
     "cell",
     "contact_phone",
@@ -273,6 +375,12 @@ async function forwardToCRM(normalizedPayload) {
     "lead_source",
     "provider",
     "marketplace",
+    "vendor",
+    "lead_vendor",
+    "leadprovider",
+    "lead_provider",
+    "company",
+    "campaign_source",
     "data_quality_score",
   ]);
 
@@ -286,6 +394,38 @@ async function forwardToCRM(normalizedPayload) {
     }
 
     return String(value);
+  };
+
+  const normalizeNoteValue = (value) =>
+    formatNoteValue(value).trim().replace(/\s+/g, " ").toLowerCase();
+
+  const isLowValueNote = (value) => {
+    const normalizedValue = normalizeNoteValue(value);
+    const compactValue = normalizedValue.replace(/[^a-z0-9]/g, "");
+    const lowValueAnswers = new Set([
+      "",
+      "n/a",
+      "na",
+      "none",
+      "no answer",
+      "not answered",
+      "unknown",
+      "not applicable",
+      "null",
+      "undefined",
+    ]);
+    const compactLowValueAnswers = new Set([
+      "na",
+      "none",
+      "noanswer",
+      "notanswered",
+      "unknown",
+      "notapplicable",
+      "null",
+      "undefined",
+    ]);
+
+    return lowValueAnswers.has(normalizedValue) || compactLowValueAnswers.has(compactValue);
   };
 
   const noteDetails = new Map();
@@ -332,6 +472,10 @@ async function forwardToCRM(normalizedPayload) {
   const notesLines = ["Inbound Lead Details:"];
 
   noteDetails.forEach((value, key) => {
+    if (isLowValueNote(value)) {
+      return;
+    }
+
     notesLines.push(`- ${key}: ${formatNoteValue(value)}`);
   });
 
@@ -422,7 +566,15 @@ app.get("/health", (req, res) => {
 
 app.post("/webhook/lead", async (req, res, next) => {
   try {
-    const normalizedPayload = normalizeLeadPayload(req.body);
+    const hasBody = req.body && Object.keys(req.body).length > 0;
+    const hasQuery = req.query && Object.keys(req.query).length > 0;
+    const inboundPayload = hasBody ? req.body : hasQuery ? req.query : {};
+
+    console.log("RAW BODY:", JSON.stringify(req.body, null, 2));
+    console.log("RAW QUERY:", JSON.stringify(req.query, null, 2));
+    console.log("INBOUND PAYLOAD USED:", JSON.stringify(inboundPayload, null, 2));
+
+    const normalizedPayload = normalizeLeadPayload(inboundPayload);
 
     if (!process.env.CRM_WEBHOOK_URL) {
       console.log("CRM_WEBHOOK_URL missing — skipping CRM forward in local test mode");
