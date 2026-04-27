@@ -212,6 +212,12 @@ function normalizeLeadPayload(rawPayload) {
       .split(",")
       .map((part) => part.trim())
       .filter(Boolean);
+    const countryValues = new Set(["us", "usa", "united states", "united states of america"]);
+
+    if (addressParts.length > 1 && countryValues.has(addressParts[addressParts.length - 1].toLowerCase())) {
+      addressParts.pop();
+    }
+
     const street = addressParts.length >= 3 ? addressParts.slice(0, -2).join(", ") : "";
     const city = addressParts.length >= 3 ? addressParts[addressParts.length - 2] : "";
     const statePostal = addressParts.length >= 2 ? addressParts[addressParts.length - 1] : "";
@@ -227,6 +233,29 @@ function normalizeLeadPayload(rawPayload) {
       state: statePostalMatch[1].toUpperCase(),
       postal_code: statePostalMatch[2] || "",
     };
+  };
+
+  const cleanSpeedToLeadStreetAddress = (address, city, state, postalCode) => {
+    let cleanedAddress = toSafeString(address);
+    const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    [postalCode, state, city].forEach((part) => {
+      const safePart = toSafeString(part);
+
+      if (!safePart) {
+        return;
+      }
+
+      cleanedAddress = cleanedAddress.replace(new RegExp(`\\b${escapeRegex(safePart)}\\b`, "gi"), "");
+    });
+
+    return cleanedAddress
+      .replace(/\b(?:usa|us|united states(?: of america)?)\b/gi, "")
+      .replace(/\s*,\s*/g, ", ")
+      .replace(/(?:,\s*)+$/g, "")
+      .replace(/^(?:,\s*)+/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
   };
 
   const findFirstValueByKeys = (value, keys) => {
@@ -422,6 +451,13 @@ function normalizeLeadPayload(rawPayload) {
         normalized.structured_data.postal_code = parsedAddress.postal_code;
       }
     }
+
+    normalized.structured_data.property_address = cleanSpeedToLeadStreetAddress(
+      normalized.structured_data.property_address,
+      normalized.structured_data.city,
+      normalized.structured_data.state,
+      normalized.structured_data.postal_code
+    );
   }
 
   if (
@@ -625,6 +661,34 @@ async function forwardToCRM(normalizedPayload) {
     "zip",
     "zipcode",
     "zip_code",
+    "country",
+  ]);
+  const speedToLeadJunkValues = new Set([
+    "",
+    "n/a",
+    "na",
+    "none",
+    "no answer",
+    "not answered",
+    "unknown",
+    "not applicable",
+    "null",
+    "undefined",
+    "test",
+    "testing",
+    "hello world",
+    "placeholder",
+    "sample",
+    "example",
+  ]);
+  const speedToLeadScriptKeys = new Set([
+    "script",
+    "callscript",
+    "openerscript",
+    "pitchscript",
+    "salesscript",
+    "rawscript",
+    "conversationscript",
   ]);
   const speedToLeadAddressValues = new Set(
     [
@@ -636,18 +700,65 @@ async function forwardToCRM(normalizedPayload) {
       .map((value) => normalizeNoteValue(value))
       .filter(Boolean)
   );
+  const speedToLeadDirectValues = new Set(
+    [
+      structuredData.name,
+      structuredData.phone,
+      structuredData.email,
+      structuredData.property_address,
+      structuredData.city,
+      structuredData.state,
+      structuredData.postal_code,
+      structuredData.contact_source,
+    ]
+      .map((value) => normalizeNoteValue(value))
+      .filter(Boolean)
+  );
+  const speedToLeadNoteValueCounts = {};
+  noteDetails.forEach((value) => {
+    const normalizedValue = normalizeNoteValue(value);
+
+    if (normalizedValue) {
+      speedToLeadNoteValueCounts[normalizedValue] =
+        (speedToLeadNoteValueCounts[normalizedValue] || 0) + 1;
+    }
+  });
+  const speedToLeadSeenNoteValues = new Set();
 
   noteDetails.forEach((value, key) => {
     if (isLowValueNote(value)) {
       return;
     }
 
+    const normalizedNoteValue = normalizeNoteValue(value);
+    const compactNoteValue = normalizedNoteValue.replace(/[^a-z0-9]/g, "");
+    const compactNoteKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isSpeedToLeadScriptNote =
+      speedToLeadScriptKeys.has(compactNoteKey) ||
+      compactNoteKey.includes("script") ||
+      compactNoteValue.includes("callscript") ||
+      compactNoteValue.includes("openerscript") ||
+      compactNoteValue.includes("pitchscript") ||
+      compactNoteValue.includes("salesscript") ||
+      compactNoteValue.includes("rawscript") ||
+      compactNoteValue.includes("conversationscript");
+
     if (
       isSpeedToLeadNormalized &&
-      (speedToLeadAddressKeys.has(String(key).toLowerCase().replace(/[^a-z0-9]/g, "")) ||
-        speedToLeadAddressValues.has(normalizeNoteValue(value)))
+      (speedToLeadJunkValues.has(normalizedNoteValue) ||
+        speedToLeadJunkValues.has(compactNoteValue) ||
+        isSpeedToLeadScriptNote ||
+        speedToLeadDirectValues.has(normalizedNoteValue) ||
+        speedToLeadAddressKeys.has(compactNoteKey) ||
+        speedToLeadAddressValues.has(normalizedNoteValue) ||
+        speedToLeadNoteValueCounts[normalizedNoteValue] > 1 ||
+        speedToLeadSeenNoteValues.has(normalizedNoteValue))
     ) {
       return;
+    }
+
+    if (isSpeedToLeadNormalized) {
+      speedToLeadSeenNoteValues.add(normalizedNoteValue);
     }
 
     notesLines.push(`- ${key}: ${formatNoteValue(value)}`);
