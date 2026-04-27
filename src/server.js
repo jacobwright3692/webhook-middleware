@@ -32,6 +32,10 @@ function normalizeLeadPayload(rawPayload) {
       timeline: "",
       motivation: "",
       source: "",
+      contact_source: "",
+      city: "",
+      state: "",
+      postal_code: "",
     },
     unmapped_data: {},
     raw_webhook_payload: rawPayload,
@@ -44,6 +48,8 @@ function normalizeLeadPayload(rawPayload) {
     phone: "phone",
     phone_number: "phone",
     mobile: "phone",
+    cell: "phone",
+    contact_phone: "phone",
     email: "email",
     address: "property_address",
     property_address: "property_address",
@@ -57,9 +63,17 @@ function normalizeLeadPayload(rawPayload) {
     reason: "motivation",
     notes: "motivation",
     situation: "motivation",
-    source: "source",
-    lead_source: "source",
-    provider: "source",
+    source: "contact_source",
+    lead_source: "contact_source",
+    provider: "contact_source",
+    marketplace: "contact_source",
+    contact_source: "contact_source",
+    city: "city",
+    state: "state",
+    postal: "postal_code",
+    postal_code: "postal_code",
+    zip: "postal_code",
+    zip_code: "postal_code",
   };
 
   const toSafeString = (value) => {
@@ -78,6 +92,26 @@ function normalizeLeadPayload(rawPayload) {
     return "";
   };
 
+  const normalizePhone = (value) => {
+    const safeValue = toSafeString(value);
+
+    if (!safeValue) {
+      return "";
+    }
+
+    const digits = safeValue.replace(/\D/g, "");
+
+    if (digits.length === 10) {
+      return `+1${digits}`;
+    }
+
+    if (digits.length === 11 && digits.startsWith("1")) {
+      return `+${digits}`;
+    }
+
+    return safeValue;
+  };
+
   const preserveUnmappedValue = (key, value) => {
     if (!Object.prototype.hasOwnProperty.call(normalized.unmapped_data, key)) {
       normalized.unmapped_data[key] = value;
@@ -93,7 +127,8 @@ function normalizeLeadPayload(rawPayload) {
 
   const tryMapField = (key, value) => {
     const structuredField = fieldMap[String(key).toLowerCase()];
-    const safeValue = toSafeString(value);
+    const safeValue =
+      structuredField === "phone" ? normalizePhone(value) : toSafeString(value);
 
     if (!structuredField || !safeValue) {
       preserveUnmappedValue(key, value);
@@ -107,6 +142,11 @@ function normalizeLeadPayload(rawPayload) {
 
     if (!normalized.structured_data[structuredField]) {
       normalized.structured_data[structuredField] = safeValue;
+
+      if (structuredField === "contact_source" && !normalized.structured_data.source) {
+        normalized.structured_data.source = safeValue;
+      }
+
       return;
     }
 
@@ -150,6 +190,38 @@ function normalizeLeadPayload(rawPayload) {
 
   walkPayload(rawPayload);
 
+  if (
+    normalized.structured_data.property_address &&
+    (!normalized.structured_data.city ||
+      !normalized.structured_data.state ||
+      !normalized.structured_data.postal_code)
+  ) {
+    const addressParts = normalized.structured_data.property_address
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const cityCandidate = addressParts.length >= 3 ? addressParts[addressParts.length - 2] : "";
+    const statePostalCandidate =
+      addressParts.length >= 2 ? addressParts[addressParts.length - 1] : "";
+    const statePostalMatch = statePostalCandidate.match(
+      /^([A-Za-z]{2})(?:\s+(\d{5}(?:-\d{4})?))?$/
+    );
+
+    if (cityCandidate && statePostalMatch) {
+      if (!normalized.structured_data.city) {
+        normalized.structured_data.city = cityCandidate;
+      }
+      if (!normalized.structured_data.state) {
+        normalized.structured_data.state = statePostalMatch[1].toUpperCase();
+      }
+      if (!normalized.structured_data.postal_code && statePostalMatch[2]) {
+        normalized.structured_data.postal_code = statePostalMatch[2];
+      }
+    } else if (addressParts.length > 1) {
+      preserveUnmappedValue("address_parse_unclear", addressParts.slice(1));
+    }
+  }
+
   if (normalized.structured_data.phone) {
     normalized.data_quality_score += 20;
   }
@@ -179,29 +251,119 @@ async function forwardToCRM(normalizedPayload) {
   }
 
   const structuredData = normalizedPayload.structured_data || {};
+  const directFieldAliases = new Set([
+    "name",
+    "full_name",
+    "phone",
+    "phone_number",
+    "mobile",
+    "cell",
+    "contact_phone",
+    "email",
+    "property_address",
+    "address",
+    "city",
+    "state",
+    "postal_code",
+    "postal",
+    "zip",
+    "zip_code",
+    "contact_source",
+    "source",
+    "lead_source",
+    "provider",
+    "marketplace",
+    "data_quality_score",
+  ]);
+
+  const formatNoteValue = (value) => {
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    if (typeof value === "object") {
+      return JSON.stringify(value);
+    }
+
+    return String(value);
+  };
+
+  const noteDetails = new Map();
+
+  ["asking_price", "timeline", "motivation"].forEach((key) => {
+    if (structuredData[key]) {
+      noteDetails.set(key, structuredData[key]);
+    }
+  });
+
+  Object.entries(normalizedPayload.unmapped_data || {}).forEach(([key, value]) => {
+    noteDetails.set(key, value);
+  });
+
+  const collectRawNoteDetails = (value) => {
+    if (value === null || value === undefined) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectRawNoteDetails(item));
+      return;
+    }
+
+    if (typeof value !== "object") {
+      return;
+    }
+
+    Object.entries(value).forEach(([key, entryValue]) => {
+      const normalizedKey = String(key).toLowerCase();
+
+      if (!directFieldAliases.has(normalizedKey)) {
+        noteDetails.set(key, entryValue);
+      }
+
+      if (entryValue !== null && typeof entryValue === "object") {
+        collectRawNoteDetails(entryValue);
+      }
+    });
+  };
+
+  collectRawNoteDetails(normalizedPayload.raw_webhook_payload);
+
+  const notesLines = ["Inbound Lead Details:"];
+
+  noteDetails.forEach((value, key) => {
+    notesLines.push(`- ${key}: ${formatNoteValue(value)}`);
+  });
+
+  const formatOutboundPhone = (phone) => {
+    const digits = String(phone || "").replace(/\D/g, "");
+    const tenDigitPhone =
+      digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+
+    if (tenDigitPhone.length === 10) {
+      return `(${tenDigitPhone.slice(0, 3)}) ${tenDigitPhone.slice(
+        3,
+        6
+      )}-${tenDigitPhone.slice(6)}`;
+    }
+
+    return phone || "";
+  };
+
   const crmPayload = {
-    structured_data: normalizedPayload.structured_data || {
-      name: "",
-      phone: "",
-      email: "",
-      property_address: "",
-      asking_price: "",
-      timeline: "",
-      motivation: "",
-      source: "",
-    },
-    unmapped_data: normalizedPayload.unmapped_data || {},
-    raw_webhook_payload: normalizedPayload.raw_webhook_payload || {},
     name: structuredData.name || "",
-    phone: structuredData.phone || "",
+    phone: formatOutboundPhone(structuredData.phone),
     email: structuredData.email || "",
     property_address: structuredData.property_address || "",
-    asking_price: structuredData.asking_price || "",
-    timeline: structuredData.timeline || "",
-    motivation: structuredData.motivation || "",
-    source: structuredData.source || "",
+    city: structuredData.city || "",
+    state: structuredData.state || "",
+    postal_code: structuredData.postal_code || "",
+    contact_source: structuredData.contact_source || "",
     data_quality_score: normalizedPayload.data_quality_score || 0,
+    notes: notesLines.join("\n"),
   };
+
+  console.log("Final outbound CRM payload:", JSON.stringify(crmPayload, null, 2));
 
   const fetchOptions = {
     method: "POST",
