@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const {
   buildLeadIntakeEvent,
+  defaultQueuePath,
   enqueueLeadIntakeEvent,
 } = require("./intakeQueue");
 const { cleanSpeedToLeadRecommendedScript } = require("./noteCleaning");
@@ -12,12 +13,38 @@ const PORT = process.env.PORT || 3000;
 const CRM_WEBHOOK_URL = process.env.CRM_WEBHOOK_URL;
 
 function safeEnqueueLeadIntakeEvent(event) {
+  console.info(
+    "[lead intake queue] event built",
+    JSON.stringify({
+      eventId: event.eventId,
+      eventType: event.eventType,
+      idempotencyKey: event.idempotencyKey,
+      source: event.source,
+      vendorLeadId: event.vendorLeadId,
+      crmForwardStatus: event.crmForwardStatus,
+      crmResponseStatus: event.crmResponseStatus,
+    })
+  );
+
   try {
     const result = enqueueLeadIntakeEvent(event);
+    console.info(
+      "[lead intake queue] enqueue result",
+      JSON.stringify({
+        status: result.status,
+        enqueued: result.enqueued,
+        eventId: result.event.eventId,
+        idempotencyKey: result.event.idempotencyKey,
+        processingStatus: result.event.processingStatus,
+        queuePath: result.queuePath,
+      })
+    );
+
     return {
       status: result.status,
       eventId: result.event.eventId,
       idempotencyKey: result.event.idempotencyKey,
+      queuePath: result.queuePath,
     };
   } catch (error) {
     console.error(`Lead intake queue write failed: ${error.message}`);
@@ -25,6 +52,7 @@ function safeEnqueueLeadIntakeEvent(event) {
       status: "queue_failed",
       eventId: event.eventId,
       idempotencyKey: event.idempotencyKey,
+      queuePath: process.env.INTAKE_QUEUE_PATH || defaultQueuePath,
       error: error.message,
     };
   }
