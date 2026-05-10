@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "cleanup:speed-script": "node scripts/cleanup-speed-to-lead-notes.js --dry-run"
   },
   "keywords": [
     "webhook",

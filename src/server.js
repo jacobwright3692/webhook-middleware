@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const { cleanSpeedToLeadRecommendedScript } = require("./noteCleaning");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -726,11 +727,16 @@ async function forwardToCRM(normalizedPayload) {
   const speedToLeadSeenNoteValues = new Set();
 
   noteDetails.forEach((value, key) => {
-    if (isLowValueNote(value)) {
+    const formattedValue = formatNoteValue(value);
+    const cleanedValue = isSpeedToLeadNormalized
+      ? cleanSpeedToLeadRecommendedScript(formattedValue)
+      : formattedValue;
+
+    if (isLowValueNote(cleanedValue)) {
       return;
     }
 
-    const normalizedNoteValue = normalizeNoteValue(value);
+    const normalizedNoteValue = normalizeNoteValue(cleanedValue);
     const compactNoteValue = normalizedNoteValue.replace(/[^a-z0-9]/g, "");
     const compactNoteKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
     const isSpeedToLeadScriptNote =
@@ -761,7 +767,7 @@ async function forwardToCRM(normalizedPayload) {
       speedToLeadSeenNoteValues.add(normalizedNoteValue);
     }
 
-    notesLines.push(`- ${key}: ${formatNoteValue(value)}`);
+    notesLines.push(`- ${key}: ${cleanedValue}`);
   });
 
   const formatOutboundPhone = (phone) => {
@@ -930,4 +936,5 @@ module.exports = {
   app,
   normalizeLeadPayload,
   forwardToCRM,
+  cleanSpeedToLeadRecommendedScript,
 };
