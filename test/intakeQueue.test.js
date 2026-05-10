@@ -8,7 +8,9 @@ const {
   buildLeadIntakeEvent,
   dedupeQueue,
   enqueueLeadIntakeEvent,
+  getPendingEvents,
   inspectQueue,
+  markEventProcessed,
   readQueue,
   writeQueue,
 } = require("../src/intakeQueue");
@@ -130,4 +132,49 @@ test("dedupes an existing queue file", () => {
   assert.strictEqual(result.after, 1);
   assert.strictEqual(result.duplicatesRemoved, 1);
   assert.strictEqual(readQueue(queuePath).length, 1);
+});
+
+test("returns only queued or pending events", () => {
+  const queuePath = queuePathFor("pending");
+  const queued = buildLeadIntakeEvent({ normalizedPayload: sampleNormalizedPayload({ raw_webhook_payload: { id: "queued" } }) });
+  const pending = {
+    ...buildLeadIntakeEvent({ normalizedPayload: sampleNormalizedPayload({ raw_webhook_payload: { id: "pending" } }) }),
+    processingStatus: "pending",
+  };
+  const processed = {
+    ...buildLeadIntakeEvent({ normalizedPayload: sampleNormalizedPayload({ raw_webhook_payload: { id: "processed" } }) }),
+    processingStatus: "processed",
+  };
+  writeQueue([queued, pending, processed], queuePath);
+
+  const events = getPendingEvents(queuePath);
+
+  assert.deepStrictEqual(events.map((event) => event.processingStatus), ["queued", "pending"]);
+});
+
+test("marks a queued event processed", () => {
+  const queuePath = queuePathFor("processed");
+  const event = buildLeadIntakeEvent({ normalizedPayload: sampleNormalizedPayload() });
+  writeQueue([event], queuePath);
+
+  const result = markEventProcessed(event.eventId, {
+    queuePath,
+    processedAt: "2026-05-10T21:30:00.000Z",
+  });
+
+  assert.strictEqual(result.status, "processed");
+  assert.strictEqual(result.updated, true);
+  assert.strictEqual(result.event.processingStatus, "processed");
+  assert.strictEqual(result.event.processedAt, "2026-05-10T21:30:00.000Z");
+  assert.strictEqual(readQueue(queuePath)[0].processingStatus, "processed");
+});
+
+test("returns not_found when marking a missing event processed", () => {
+  const queuePath = queuePathFor("missing");
+  writeQueue([], queuePath);
+
+  const result = markEventProcessed("missing-event", { queuePath });
+
+  assert.strictEqual(result.status, "not_found");
+  assert.strictEqual(result.updated, false);
 });

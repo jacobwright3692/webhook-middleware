@@ -5,6 +5,8 @@ const {
   buildLeadIntakeEvent,
   defaultQueuePath,
   enqueueLeadIntakeEvent,
+  getPendingEvents,
+  markEventProcessed,
 } = require("./intakeQueue");
 const { cleanSpeedToLeadRecommendedScript } = require("./noteCleaning");
 
@@ -912,6 +914,59 @@ app.get("/health", (req, res) => {
   });
 });
 
+function isAuthorizedIntakeQueueRequest(req) {
+  const token = process.env.INTAKE_QUEUE_API_TOKEN;
+  const authorization = req.headers.authorization || "";
+
+  return Boolean(token) && authorization === `Bearer ${token}`;
+}
+
+function handlePendingIntakeEvents(req, res) {
+  if (!isAuthorizedIntakeQueueRequest(req)) {
+    return res.status(401).json({
+      error: "Unauthorized",
+      message: "A valid intake queue bearer token is required.",
+    });
+  }
+
+  const events = getPendingEvents();
+
+  return res.status(200).json({
+    status: "ok",
+    count: events.length,
+    events,
+  });
+}
+
+function handleMarkIntakeEventProcessed(req, res) {
+  if (!isAuthorizedIntakeQueueRequest(req)) {
+    return res.status(401).json({
+      error: "Unauthorized",
+      message: "A valid intake queue bearer token is required.",
+    });
+  }
+
+  const result = markEventProcessed(req.params.eventId);
+
+  if (!result.updated) {
+    return res.status(404).json({
+      status: result.status,
+      eventId: req.params.eventId,
+    });
+  }
+
+  return res.status(200).json({
+    status: result.status,
+    eventId: result.event.eventId,
+    processingStatus: result.event.processingStatus,
+    queuePath: result.queuePath,
+  });
+}
+
+app.get("/intake/events/pending", handlePendingIntakeEvents);
+
+app.post("/intake/events/:eventId/processed", handleMarkIntakeEventProcessed);
+
 app.post("/webhook/lead", async (req, res, next) => {
   try {
     const hasBody = req.body && Object.keys(req.body).length > 0;
@@ -1012,6 +1067,9 @@ if (require.main === module) {
 module.exports = {
   app,
   buildOutboundCrmPayload,
+  handleMarkIntakeEventProcessed,
+  handlePendingIntakeEvents,
+  isAuthorizedIntakeQueueRequest,
   normalizeLeadPayload,
   forwardToCRM,
   safeEnqueueLeadIntakeEvent,

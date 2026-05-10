@@ -205,6 +205,44 @@ function inspectQueue(queuePath = process.env.INTAKE_QUEUE_PATH || defaultQueueP
   };
 }
 
+function getPendingEvents(queuePath = process.env.INTAKE_QUEUE_PATH || defaultQueuePath) {
+  return readQueue(queuePath).filter((event) =>
+    ["queued", "pending"].includes(String(event.processingStatus || "").toLowerCase())
+  );
+}
+
+function markEventProcessed(eventId, options = {}) {
+  const queuePath = options.queuePath || process.env.INTAKE_QUEUE_PATH || defaultQueuePath;
+  const queue = readQueue(queuePath);
+  const eventIndex = queue.findIndex((event) => event.eventId === eventId);
+
+  if (eventIndex === -1) {
+    return {
+      status: "not_found",
+      updated: false,
+      event: null,
+      queuePath,
+    };
+  }
+
+  const now = options.processedAt || new Date().toISOString();
+  const event = {
+    ...queue[eventIndex],
+    processingStatus: "processed",
+    processedAt: queue[eventIndex].processedAt || now,
+    updatedAt: now,
+  };
+  queue[eventIndex] = event;
+  writeQueue(queue, queuePath);
+
+  return {
+    status: "processed",
+    updated: true,
+    event,
+    queuePath,
+  };
+}
+
 function dedupeQueue(queuePath = process.env.INTAKE_QUEUE_PATH || defaultQueuePath) {
   const queue = readQueue(queuePath);
   const seen = new Set();
@@ -241,8 +279,10 @@ module.exports = {
   enqueueLeadIntakeEvent,
   eventType,
   eventVersion,
+  getPendingEvents,
   getVendorLeadId,
   inspectQueue,
+  markEventProcessed,
   readQueue,
   stableStringify,
   writeQueue,
