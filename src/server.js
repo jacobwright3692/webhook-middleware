@@ -1,11 +1,34 @@
 require("dotenv").config();
 
 const express = require("express");
+const {
+  buildLeadIntakeEvent,
+  enqueueLeadIntakeEvent,
+} = require("./intakeQueue");
 const { cleanSpeedToLeadRecommendedScript } = require("./noteCleaning");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CRM_WEBHOOK_URL = process.env.CRM_WEBHOOK_URL;
+
+function safeEnqueueLeadIntakeEvent(event) {
+  try {
+    const result = enqueueLeadIntakeEvent(event);
+    return {
+      status: result.status,
+      eventId: result.event.eventId,
+      idempotencyKey: result.event.idempotencyKey,
+    };
+  } catch (error) {
+    console.error(`Lead intake queue write failed: ${error.message}`);
+    return {
+      status: "queue_failed",
+      eventId: event.eventId,
+      idempotencyKey: event.idempotencyKey,
+      error: error.message,
+    };
+  }
+}
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -514,13 +537,7 @@ function normalizeLeadPayload(rawPayload) {
   return normalized;
 }
 
-async function forwardToCRM(normalizedPayload) {
-  const crmWebhookUrl = process.env.CRM_WEBHOOK_URL;
-
-  if (!crmWebhookUrl) {
-    throw new Error("CRM_WEBHOOK_URL environment variable is required");
-  }
-
+function buildOutboundCrmPayload(normalizedPayload) {
   const structuredData = normalizedPayload.structured_data || {};
   const directFieldAliases = new Set([
     "name",
@@ -798,6 +815,18 @@ async function forwardToCRM(normalizedPayload) {
     notes: notesLines.join("\n"),
   };
 
+  return crmPayload;
+}
+
+async function forwardToCRM(normalizedPayload) {
+  const crmWebhookUrl = process.env.CRM_WEBHOOK_URL;
+
+  if (!crmWebhookUrl) {
+    throw new Error("CRM_WEBHOOK_URL environment variable is required");
+  }
+
+  const crmPayload = buildOutboundCrmPayload(normalizedPayload);
+
   console.log("Final outbound CRM payload:", JSON.stringify(crmPayload, null, 2));
 
   const fetchOptions = {
@@ -866,23 +895,42 @@ app.post("/webhook/lead", async (req, res, next) => {
     console.log("INBOUND PAYLOAD USED:", JSON.stringify(inboundPayload, null, 2));
 
     const normalizedPayload = normalizeLeadPayload(inboundPayload);
+    const outboundCrmPayload = buildOutboundCrmPayload(normalizedPayload);
 
     if (!process.env.CRM_WEBHOOK_URL) {
       console.log("CRM_WEBHOOK_URL missing — skipping CRM forward in local test mode");
+      const intakeQueue = safeEnqueueLeadIntakeEvent(
+        buildLeadIntakeEvent({
+          normalizedPayload,
+          cleanNotes: outboundCrmPayload.notes,
+          crmForwardStatus: "skipped",
+          crmResponseStatus: null,
+        })
+      );
 
       return res.status(202).json({
         status: "accepted",
         mode: "local_test_no_crm_forward",
+        intake_queue: intakeQueue,
         normalized: normalizedPayload,
       });
     }
 
     const crmResult = await forwardToCRM(normalizedPayload);
+    const intakeQueue = safeEnqueueLeadIntakeEvent(
+      buildLeadIntakeEvent({
+        normalizedPayload,
+        cleanNotes: outboundCrmPayload.notes,
+        crmForwardStatus: crmResult.success ? "accepted" : "failed",
+        crmResponseStatus: crmResult.statusCode,
+      })
+    );
 
     if (!crmResult.success) {
       return res.status(502).json({
         status: "crm_forward_failed",
         error: crmResult,
+        intake_queue: intakeQueue,
         normalized: normalizedPayload,
       });
     }
@@ -891,6 +939,7 @@ app.post("/webhook/lead", async (req, res, next) => {
       status: "accepted",
       mode: "crm_forwarded",
       crm_status: crmResult.statusCode,
+      intake_queue: intakeQueue,
       normalized: normalizedPayload,
     });
   } catch (error) {
@@ -934,7 +983,9 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  buildOutboundCrmPayload,
   normalizeLeadPayload,
   forwardToCRM,
+  safeEnqueueLeadIntakeEvent,
   cleanSpeedToLeadRecommendedScript,
 };

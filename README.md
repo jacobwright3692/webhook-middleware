@@ -28,6 +28,15 @@ CRM_WEBHOOK_URL=https://example.com/crm/webhook
 
 This project intentionally does not include a CRM implementation or frontend. The `normalizeLeadPayload()` and `forwardToCRM()` functions are placeholders for future source-specific cleanup, CRM field mapping, and outbound webhook forwarding.
 
+## Lead Intake Queue
+
+After a lead is normalized and the CRM forward is attempted, the webhook writes a durable local event to `data/lead-intake-events.json`. This is only an async handoff foundation for future ARV-Agent-Fresh consumption; it does not trigger ARV research or browser automation.
+
+```bash
+npm run intake:queue:inspect
+npm run intake:queue:dedupe
+```
+
 ## Speed to Lead Note Cleanup
 
 New Speed to Lead notes remove embedded recommended script blocks before forwarding to the CRM.
