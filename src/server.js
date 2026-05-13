@@ -8,6 +8,7 @@ const {
   getPendingEvents,
   markEventProcessed,
 } = require("./intakeQueue");
+const { buildAcquisitionsCrmNote } = require("./noteIntelligence");
 const { cleanSpeedToLeadRecommendedScript } = require("./noteCleaning");
 
 const app = express();
@@ -86,6 +87,10 @@ function normalizeLeadPayload(rawPayload) {
       asking_price: "",
       timeline: "",
       motivation: "",
+      condition: "",
+      occupancy: "",
+      mortgage: "",
+      contact_preferences: "",
       source: "",
       contact_source: "",
       city: "",
@@ -118,13 +123,23 @@ function normalizeLeadPayload(rawPayload) {
     price: "asking_price",
     asking_price: "asking_price",
     offer_price: "asking_price",
+    offerprice: "asking_price",
+    list_price: "asking_price",
+    listprice: "asking_price",
+    lowest_price: "asking_price",
+    lowestprice: "asking_price",
     timeline: "timeline",
     timeframe: "timeline",
     sell_when: "timeline",
+    sellwhen: "timeline",
+    close_when: "timeline",
+    closewhen: "timeline",
     motivation: "motivation",
     reason: "motivation",
     notes: "motivation",
     situation: "motivation",
+    seller_notes: "motivation",
+    sellernotes: "motivation",
     source: "contact_source",
     lead_source: "contact_source",
     provider: "contact_source",
@@ -142,6 +157,28 @@ function normalizeLeadPayload(rawPayload) {
     postal_code: "postal_code",
     zip: "postal_code",
     zip_code: "postal_code",
+    condition: "condition",
+    property_condition: "condition",
+    propertycondition: "condition",
+    repairs: "condition",
+    repair_notes: "condition",
+    repairnotes: "condition",
+    occupancy: "occupancy",
+    occupied: "occupancy",
+    vacant: "occupancy",
+    tenant_status: "occupancy",
+    tenantstatus: "occupancy",
+    mortgage: "mortgage",
+    mortgage_balance: "mortgage",
+    mortgagebalance: "mortgage",
+    payoff: "mortgage",
+    contact_preference: "contact_preferences",
+    contactpreference: "contact_preferences",
+    best_time_to_call: "contact_preferences",
+    besttimetocall: "contact_preferences",
+    preferred_call_time: "contact_preferences",
+    preferredcalltime: "contact_preferences",
+    language: "contact_preferences",
   };
   const nameParts = {
     first_name: "",
@@ -209,6 +246,10 @@ function normalizeLeadPayload(rawPayload) {
 
     if (comparableValue === "leadzolo") {
       return "Lead Zolo";
+    }
+
+    if (comparableValue === "properleads") {
+      return "Proper Leads";
     }
 
     if (comparableValue === "speedtolead") {
@@ -842,7 +883,7 @@ function buildOutboundCrmPayload(normalizedPayload) {
     postal_code: structuredData.postal_code || "",
     contact_source: structuredData.contact_source || "",
     data_quality_score: normalizedPayload.data_quality_score || 0,
-    notes: notesLines.join("\n"),
+    notes: buildAcquisitionsCrmNote(normalizedPayload),
   };
 
   return crmPayload;

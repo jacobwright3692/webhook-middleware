@@ -28,6 +28,8 @@ CRM_WEBHOOK_URL=https://example.com/crm/webhook
 
 This project intentionally does not include a CRM implementation or frontend. The `normalizeLeadPayload()` and `forwardToCRM()` functions are placeholders for future source-specific cleanup, CRM field mapping, and outbound webhook forwarding.
 
+CRM notes are formatted as acquisitions intelligence instead of raw intake dumps. New notes start with a `Quick Read`, then only include non-empty useful sections such as seller summary, property summary, motivation/timeline, condition, price, occupancy, financial signals, contact preferences, source information, flags, and follow-up guidance.
+
 ## Lead Intake Queue
 
 After a lead is normalized and the CRM forward is attempted, the webhook writes a durable local event to `data/lead-intake-events.json`. This is only an async handoff foundation for future ARV-Agent-Fresh consumption; it does not trigger ARV research or browser automation.
@@ -68,3 +70,13 @@ GHL_API_TOKEN=your_private_integration_token GHL_LOCATION_ID=your_location_id no
 ```
 
 If you have the exact repeated script text, place it in a file and pass `--exact-script-file=path/to/script.txt` for the safest match. Empty notes are skipped by default; pass `--delete-empty` with `--live` only if you want notes containing nothing but the unwanted script removed.
+
+## Historical Note Remediation Preview
+
+To standardize old exported notes without touching CRM records, export the source records to JSON and run:
+
+```bash
+npm run notes:remediate:preview -- --input=path/to/export.json --output=data/note-remediation-preview.json
+```
+
+This generates preview-only standardized notes and preserves the original note text in the output. The utility intentionally rejects `--live`; CRM overwrites should be reviewed and handled as a separate, explicit workflow.

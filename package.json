@@ -9,6 +9,7 @@
     "dev": "node --watch src/server.js",
     "test": "node --test",
     "cleanup:speed-script": "node scripts/cleanup-speed-to-lead-notes.js --dry-run",
+    "notes:remediate:preview": "node scripts/remediate-crm-notes.js",
     "intake:queue:inspect": "node scripts/intake-queue.js inspect",
     "intake:queue:dedupe": "node scripts/intake-queue.js dedupe"
   },
