@@ -5,10 +5,10 @@ const { buildAcquisitionsCrmNote } = require("../src/noteIntelligence");
 const { buildOutboundCrmPayload, normalizeLeadPayload } = require("../src/server");
 const { remediateRecords } = require("../scripts/remediate-crm-notes");
 
-test("formats Speed to Lead notes as acquisitions intelligence without script or noisy payload", () => {
+test("routes Speed to Lead structured fields and keeps notes to unique seller context", () => {
   const payload = normalizeLeadPayload({
     source: "SpeedToLead",
-    full_name: "Casey Seller",
+    full_name: "casey seller",
     phone: "555-555-1212",
     property_address: "123 Main St, Dallas, TX 75201, USA",
     asking_price: "$145,000",
@@ -22,27 +22,30 @@ test("formats Speed to Lead notes as acquisitions intelligence without script or
     comments: "Seller asked for a callback this evening after work.",
   });
 
-  const note = buildOutboundCrmPayload(payload).notes;
+  const crmPayload = buildOutboundCrmPayload(payload);
 
-  assert.match(note, /^Quick Read/);
-  assert.match(note, /Seller Summary/);
-  assert.match(note, /Property Summary/);
-  assert.match(note, /Motivation \/ Timeline/);
-  assert.match(note, /Property Condition/);
-  assert.match(note, /Important Flags/);
-  assert.match(note, /Follow-up Guidance/);
-  assert.match(note, /Casey Seller/);
-  assert.match(note, /123 Main St, Dallas, TX 75201/);
-  assert.match(note, /Inherited property/);
-  assert.match(note, /Roof is older/);
-  assert.match(note, /Vacancy signal/);
-  assert.match(note, /Prioritize same-day callback/);
-  assert.doesNotMatch(note, /Recommended Script/i);
-  assert.doesNotMatch(note, /trusted_form/i);
-  assert.doesNotMatch(note, /lead_cost/i);
+  assert.equal(crmPayload.name, "Casey Seller");
+  assert.equal(crmPayload.property_address, "123 Main St");
+  assert.equal(crmPayload.city, "Dallas");
+  assert.equal(crmPayload.state, "TX");
+  assert.equal(crmPayload.postal_code, "75201");
+  assert.equal(crmPayload.occupancy, "Vacant");
+  assert.equal(crmPayload.timeline_to_sell, "ASAP");
+  assert.equal(crmPayload.motivation_level, "Inherited property and wants a quick cash sale");
+  assert.match(crmPayload.notes, /^Seller Context/);
+  assert.match(crmPayload.notes, /callback this evening/);
+  assert.doesNotMatch(crmPayload.notes, /Casey Seller/);
+  assert.doesNotMatch(crmPayload.notes, /123 Main/i);
+  assert.doesNotMatch(crmPayload.notes, /Dallas|TX|75201/);
+  assert.doesNotMatch(crmPayload.notes, /Inherited property/);
+  assert.doesNotMatch(crmPayload.notes, /Roof is older/);
+  assert.doesNotMatch(crmPayload.notes, /Vacant/);
+  assert.doesNotMatch(crmPayload.notes, /Recommended Script/i);
+  assert.doesNotMatch(crmPayload.notes, /trusted_form/i);
+  assert.doesNotMatch(crmPayload.notes, /lead_cost/i);
 });
 
-test("normalizes Lead Zolo notes into the same section structure", () => {
+test("normalizes Lead Zolo structured fields without duplicating notes", () => {
   const payload = normalizeLeadPayload({
     provider: "LeadZolo",
     name: "Jordan Owner",
@@ -57,19 +60,19 @@ test("normalizes Lead Zolo notes into the same section structure", () => {
     utm_campaign: "internal-campaign",
   });
 
-  const note = buildOutboundCrmPayload(payload).notes;
+  const crmPayload = buildOutboundCrmPayload(payload);
 
-  assert.match(note, /^Quick Read/);
-  assert.match(note, /Seller Summary/);
-  assert.match(note, /Property Condition/);
-  assert.match(note, /Occupancy/);
-  assert.match(note, /Contact Preferences/);
-  assert.match(note, /Lead source: Lead Zolo/);
-  assert.match(note, /Tenant\/rental signal/);
-  assert.doesNotMatch(note, /utm_campaign/i);
+  assert.equal(crmPayload.property_address, "44 Oak Ave");
+  assert.equal(crmPayload.city, "Tampa");
+  assert.equal(crmPayload.state, "FL");
+  assert.equal(crmPayload.postal_code, "33602");
+  assert.equal(crmPayload.occupancy, "Tenant Occupied");
+  assert.equal(crmPayload.timeline_to_sell, "30 days");
+  assert.equal(crmPayload.motivation_level, "Tired landlord with tenant issues");
+  assert.equal(crmPayload.notes, "");
 });
 
-test("normalizes Proper Leads source naming and preserves important financial signals", () => {
+test("normalizes Proper Leads source naming and keeps financial motivation out of notes", () => {
   const payload = normalizeLeadPayload({
     lead_source: "ProperLeads",
     first_name: "Morgan",
@@ -82,14 +85,15 @@ test("normalizes Proper Leads source naming and preserves important financial si
     lead_id: "proper-123",
   });
 
-  const note = buildOutboundCrmPayload(payload).notes;
+  const crmPayload = buildOutboundCrmPayload(payload);
 
-  assert.match(note, /Lead source: Proper Leads/);
-  assert.match(note, /Mortgage \/ Financial/);
-  assert.match(note, /Mortgage: \$98,000/);
-  assert.match(note, /Financial distress signal/);
-  assert.match(note, /Foreclosure\/default signal/);
-  assert.doesNotMatch(note, /lead_id/i);
+  assert.equal(crmPayload.contact_source, "Proper Leads");
+  assert.equal(crmPayload.property_address, "9 Pine Rd");
+  assert.equal(crmPayload.city, "Columbus");
+  assert.equal(crmPayload.state, "OH");
+  assert.equal(crmPayload.postal_code, "43215");
+  assert.equal(crmPayload.motivation_level, "Behind on payments and wants to avoid foreclosure.");
+  assert.equal(crmPayload.notes, "");
 });
 
 test("omits empty and low-value fields without hallucinating seller details", () => {
@@ -161,7 +165,68 @@ test("historical remediation preview preserves original notes and generates stan
   assert.equal(preview[0].contactId, "contact_123");
   assert.equal(preview[0].noteId, "note_123");
   assert.match(preview[0].originalNote, /Raw dump/);
-  assert.match(preview[0].standardizedNote, /^Quick Read/);
-  assert.match(preview[0].standardizedNote, /Important Flags/);
+  assert.equal(preview[0].standardizedNote, "");
   assert.equal(preview[0].preservationMode, "preview_only_no_crm_write");
+});
+
+test("leaves notes empty when payload only contains duplicated seller and property fields", () => {
+  const payload = normalizeLeadPayload({
+    name: "SAM SELLER",
+    phone: "555-111-2222",
+    email: "sam@example.com",
+    property_address: "318 Bowman Street, Mansfield, OH 44903",
+    bedrooms: "3",
+    bathrooms: "1",
+    lot_size: "0.12 acres",
+    county: "Richland",
+    price: "$100,000",
+    condition: "Good",
+    timeline: "Urgent",
+    vacant: "yes",
+    reason: "Financial emergency",
+  });
+  const crmPayload = buildOutboundCrmPayload(payload);
+
+  assert.equal(crmPayload.name, "Sam Seller");
+  assert.equal(crmPayload.property_address, "318 Bowman Street");
+  assert.equal(crmPayload.city, "Mansfield");
+  assert.equal(crmPayload.state, "OH");
+  assert.equal(crmPayload.postal_code, "44903");
+  assert.equal(crmPayload.occupancy, "Vacant");
+  assert.equal(crmPayload.timeline_to_sell, "Urgent");
+  assert.equal(crmPayload.motivation_level, "Financial emergency");
+  assert.equal(crmPayload.notes, "");
+});
+
+test("parses street city state zip without commas and supports configured motivation field", () => {
+  const previousMotivationFieldKey = process.env.CRM_MOTIVATION_FIELD_KEY;
+  process.env.CRM_MOTIVATION_FIELD_KEY = "motivation_reason";
+
+  try {
+    const payload = normalizeLeadPayload({
+      full_name: "taylor owner",
+      address: "500 West Broad Street Mansfield Ohio 44903",
+      occupancy: "Owner occupied",
+      timeline_to_sell: "Within 14 days",
+      emergency: "Medical bills",
+    });
+    const crmPayload = buildOutboundCrmPayload(payload);
+
+    assert.equal(crmPayload.name, "Taylor Owner");
+    assert.equal(crmPayload.property_address, "500 West Broad Street");
+    assert.equal(crmPayload.city, "Mansfield");
+    assert.equal(crmPayload.state, "OH");
+    assert.equal(crmPayload.postal_code, "44903");
+    assert.equal(crmPayload.occupancy, "Occupied");
+    assert.equal(crmPayload.timeline_to_sell, "Within 14 days");
+    assert.equal(crmPayload.motivation_level, "Medical bills");
+    assert.equal(crmPayload.motivation_reason, "Medical bills");
+    assert.equal(crmPayload.notes, "");
+  } finally {
+    if (previousMotivationFieldKey === undefined) {
+      delete process.env.CRM_MOTIVATION_FIELD_KEY;
+    } else {
+      process.env.CRM_MOTIVATION_FIELD_KEY = previousMotivationFieldKey;
+    }
+  }
 });

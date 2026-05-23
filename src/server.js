@@ -8,7 +8,6 @@ const {
   getPendingEvents,
   markEventProcessed,
 } = require("./intakeQueue");
-const { buildAcquisitionsCrmNote } = require("./noteIntelligence");
 const { cleanSpeedToLeadRecommendedScript } = require("./noteCleaning");
 
 const app = express();
@@ -157,6 +156,11 @@ function normalizeLeadPayload(rawPayload) {
     postal_code: "postal_code",
     zip: "postal_code",
     zip_code: "postal_code",
+    street: "property_address",
+    street_address: "property_address",
+    streetaddress: "property_address",
+    address1: "property_address",
+    addressline1: "property_address",
     condition: "condition",
     property_condition: "condition",
     propertycondition: "condition",
@@ -168,10 +172,21 @@ function normalizeLeadPayload(rawPayload) {
     vacant: "occupancy",
     tenant_status: "occupancy",
     tenantstatus: "occupancy",
+    timeline_to_sell: "timeline",
+    timelinetosell: "timeline",
+    time_to_sell: "timeline",
+    timetosell: "timeline",
+    urgency: "timeline",
+    urgent: "timeline",
     mortgage: "mortgage",
     mortgage_balance: "mortgage",
     mortgagebalance: "mortgage",
     payoff: "mortgage",
+    emergency: "motivation",
+    financial_reason: "motivation",
+    financialreason: "motivation",
+    reason_for_selling: "motivation",
+    reasonforselling: "motivation",
     contact_preference: "contact_preferences",
     contactpreference: "contact_preferences",
     best_time_to_call: "contact_preferences",
@@ -264,6 +279,102 @@ function normalizeLeadPayload(rawPayload) {
       .toLowerCase()
       .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 
+  const normalizeName = (value) => toTitleCase(value);
+
+  const normalizeCity = (value) => toTitleCase(value);
+
+  const stateNameToCode = {
+    alabama: "AL",
+    alaska: "AK",
+    arizona: "AZ",
+    arkansas: "AR",
+    california: "CA",
+    colorado: "CO",
+    connecticut: "CT",
+    delaware: "DE",
+    florida: "FL",
+    georgia: "GA",
+    hawaii: "HI",
+    idaho: "ID",
+    illinois: "IL",
+    indiana: "IN",
+    iowa: "IA",
+    kansas: "KS",
+    kentucky: "KY",
+    louisiana: "LA",
+    maine: "ME",
+    maryland: "MD",
+    massachusetts: "MA",
+    michigan: "MI",
+    minnesota: "MN",
+    mississippi: "MS",
+    missouri: "MO",
+    montana: "MT",
+    nebraska: "NE",
+    nevada: "NV",
+    newhampshire: "NH",
+    newjersey: "NJ",
+    newmexico: "NM",
+    newyork: "NY",
+    northcarolina: "NC",
+    northdakota: "ND",
+    ohio: "OH",
+    oklahoma: "OK",
+    oregon: "OR",
+    pennsylvania: "PA",
+    rhodeisland: "RI",
+    southcarolina: "SC",
+    southdakota: "SD",
+    tennessee: "TN",
+    texas: "TX",
+    utah: "UT",
+    vermont: "VT",
+    virginia: "VA",
+    washington: "WA",
+    westvirginia: "WV",
+    wisconsin: "WI",
+    wyoming: "WY",
+  };
+
+  const normalizeState = (value) => {
+    const letters = toSafeString(value).replace(/[^A-Za-z]/g, "");
+    const compact = letters.toLowerCase();
+    return stateNameToCode[compact] || letters.slice(0, 2).toUpperCase();
+  };
+
+  const normalizePostalCode = (value) => toSafeString(value).replace(/\D/g, "").slice(0, 5);
+
+  const normalizeOccupancy = (key, value) => {
+    const normalizedKey = normalizeKey(key);
+    const safeValue = toSafeString(value);
+    const normalizedValue = safeValue.toLowerCase();
+    const truthy = ["true", "yes", "y", "1"].includes(normalizedValue);
+    const falsy = ["false", "no", "n", "0"].includes(normalizedValue);
+    const combined = `${normalizedKey} ${normalizedValue}`;
+
+    if (normalizedKey.includes("vacant") && truthy) {
+      return "Vacant";
+    }
+
+    if (normalizedKey.includes("vacant") && falsy) {
+      return "Occupied";
+    }
+
+    if ((normalizedKey.includes("occupied") || normalizedKey.includes("occupancy")) && truthy) {
+      return "Occupied";
+    }
+
+    if (/\b(vacant|empty|abandoned)\b/i.test(combined)) {
+      return "Vacant";
+    }
+
+    if (/\b(tenant|rented|rental|occupied|owner occupied|owner-occupied)\b/i.test(combined)) {
+      return /\btenant|rented|rental\b/i.test(combined) ? "Tenant Occupied" : "Occupied";
+    }
+
+    return safeValue;
+  };
+
   const isSpeedToLeadPayload = (value) => {
     if (value === null || value === undefined) {
       return false;
@@ -303,7 +414,8 @@ function normalizeLeadPayload(rawPayload) {
   };
 
   const splitFullAddress = (address) => {
-    const addressParts = toSafeString(address)
+    const safeAddress = toSafeString(address);
+    const addressParts = safeAddress
       .split(",")
       .map((part) => part.trim())
       .filter(Boolean);
@@ -313,10 +425,27 @@ function normalizeLeadPayload(rawPayload) {
       addressParts.pop();
     }
 
-    const street = addressParts.length >= 3 ? addressParts.slice(0, -2).join(", ") : "";
+    if (addressParts.length < 3) {
+      const noCommaMatch = safeAddress.match(
+        /^(.+?\b(?:st|street|ave|avenue|rd|road|dr|drive|ln|lane|ct|court|cir|circle|blvd|boulevard|way|trl|trail|pl|place|pkwy|parkway|ter|terrace)\b)\s+([A-Za-z .'-]+?)\s+([A-Za-z]{2}|[A-Za-z ]{4,})\s+(\d{5}(?:-\d{4})?)(?:\s+(?:us|usa|united states(?: of america)?))?$/i
+      );
+
+      if (!noCommaMatch) {
+        return null;
+      }
+
+      return {
+        street: noCommaMatch[1].trim(),
+        city: noCommaMatch[2].trim(),
+        state: normalizeState(noCommaMatch[3]),
+        postal_code: noCommaMatch[4],
+      };
+    }
+
+    const street = addressParts.length >= 3 ? addressParts.slice(0, -2).join(" ") : "";
     const city = addressParts.length >= 3 ? addressParts[addressParts.length - 2] : "";
     const statePostal = addressParts.length >= 2 ? addressParts[addressParts.length - 1] : "";
-    const statePostalMatch = statePostal.match(/^([A-Za-z]{2})(?:\s+(\d{5}(?:-\d{4})?))?$/);
+    const statePostalMatch = statePostal.match(/^([A-Za-z]{2}|[A-Za-z ]{4,})(?:\s+(\d{5}(?:-\d{4})?))?$/);
 
     if (!street || !city || !statePostalMatch) {
       return null;
@@ -325,7 +454,7 @@ function normalizeLeadPayload(rawPayload) {
     return {
       street,
       city,
-      state: statePostalMatch[1].toUpperCase(),
+      state: normalizeState(statePostalMatch[1]),
       postal_code: statePostalMatch[2] || "",
     };
   };
@@ -352,6 +481,12 @@ function normalizeLeadPayload(rawPayload) {
       .replace(/\s{2,}/g, " ")
       .trim();
   };
+
+  const cleanStreetAddress = (address, city, state, postalCode) =>
+    cleanSpeedToLeadStreetAddress(address, city, state, postalCode)
+      .replace(/\s*,\s*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
 
   const findFirstValueByKeys = (value, keys) => {
     if (value === null || value === undefined) {
@@ -413,6 +548,8 @@ function normalizeLeadPayload(rawPayload) {
         ? normalizePhone(value)
         : structuredField === "contact_source"
           ? normalizeContactSource(value)
+          : structuredField === "occupancy"
+            ? normalizeOccupancy(key, value)
           : toSafeString(value);
 
     if (!structuredField || !safeValue) {
@@ -491,6 +628,10 @@ function normalizeLeadPayload(rawPayload) {
       .join(" ");
   }
 
+  if (normalized.structured_data.name) {
+    normalized.structured_data.name = normalizeName(normalized.structured_data.name);
+  }
+
   const hasPropertyLeadsSignature = (value) => {
     if (value === null || value === undefined || typeof value !== "object") {
       return false;
@@ -528,7 +669,7 @@ function normalizeLeadPayload(rawPayload) {
     }
 
     if (normalized.structured_data.city) {
-      normalized.structured_data.city = toTitleCase(normalized.structured_data.city);
+      normalized.structured_data.city = normalizeCity(normalized.structured_data.city);
     }
 
     const parsedAddress = splitFullAddress(normalized.structured_data.property_address);
@@ -537,7 +678,7 @@ function normalizeLeadPayload(rawPayload) {
       normalized.structured_data.property_address = parsedAddress.street;
 
       if (!normalized.structured_data.city) {
-        normalized.structured_data.city = toTitleCase(parsedAddress.city);
+        normalized.structured_data.city = normalizeCity(parsedAddress.city);
       }
       if (!normalized.structured_data.state) {
         normalized.structured_data.state = parsedAddress.state;
@@ -555,36 +696,47 @@ function normalizeLeadPayload(rawPayload) {
     );
   }
 
-  if (
-    normalized.structured_data.property_address &&
-    (!normalized.structured_data.city ||
-      !normalized.structured_data.state ||
-      !normalized.structured_data.postal_code)
-  ) {
-    const addressParts = normalized.structured_data.property_address
-      .split(",")
-      .map((part) => part.trim())
-      .filter(Boolean);
-    const cityCandidate = addressParts.length >= 3 ? addressParts[addressParts.length - 2] : "";
-    const statePostalCandidate =
-      addressParts.length >= 2 ? addressParts[addressParts.length - 1] : "";
-    const statePostalMatch = statePostalCandidate.match(
-      /^([A-Za-z]{2})(?:\s+(\d{5}(?:-\d{4})?))?$/
-    );
+  if (normalized.structured_data.property_address) {
+    const parsedAddress = splitFullAddress(normalized.structured_data.property_address);
 
-    if (cityCandidate && statePostalMatch) {
+    if (parsedAddress) {
+      normalized.structured_data.property_address = parsedAddress.street;
+
       if (!normalized.structured_data.city) {
-        normalized.structured_data.city = cityCandidate;
+        normalized.structured_data.city = parsedAddress.city;
       }
       if (!normalized.structured_data.state) {
-        normalized.structured_data.state = statePostalMatch[1].toUpperCase();
+        normalized.structured_data.state = parsedAddress.state;
       }
-      if (!normalized.structured_data.postal_code && statePostalMatch[2]) {
-        normalized.structured_data.postal_code = statePostalMatch[2];
+      if (!normalized.structured_data.postal_code && parsedAddress.postal_code) {
+        normalized.structured_data.postal_code = parsedAddress.postal_code;
       }
-    } else if (addressParts.length > 1) {
+    } else if (normalized.structured_data.property_address.includes(",")) {
+      const addressParts = normalized.structured_data.property_address
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
       preserveUnmappedValue("address_parse_unclear", addressParts.slice(1));
+      normalized.structured_data.property_address = addressParts[0] || normalized.structured_data.property_address;
     }
+  }
+
+  if (normalized.structured_data.city) {
+    normalized.structured_data.city = normalizeCity(normalized.structured_data.city);
+  }
+  if (normalized.structured_data.state) {
+    normalized.structured_data.state = normalizeState(normalized.structured_data.state);
+  }
+  if (normalized.structured_data.postal_code) {
+    normalized.structured_data.postal_code = normalizePostalCode(normalized.structured_data.postal_code);
+  }
+  if (normalized.structured_data.property_address) {
+    normalized.structured_data.property_address = cleanStreetAddress(
+      normalized.structured_data.property_address,
+      normalized.structured_data.city,
+      normalized.structured_data.state,
+      normalized.structured_data.postal_code
+    );
   }
 
   if (normalized.structured_data.phone) {
@@ -606,6 +758,209 @@ function normalizeLeadPayload(rawPayload) {
   normalized.data_quality_score = Math.min(normalized.data_quality_score, 100);
 
   return normalized;
+}
+
+function buildUniqueSellerContextNote(normalizedPayload = {}) {
+  const structuredData = normalizedPayload.structured_data || {};
+  const directNoteKeys = new Set([
+    "address",
+    "askingprice",
+    "bath",
+    "bathroom",
+    "bathrooms",
+    "baths",
+    "bed",
+    "bedroom",
+    "bedrooms",
+    "beds",
+    "campaignsource",
+    "city",
+    "company",
+    "condition",
+    "contactphone",
+    "contactsource",
+    "county",
+    "email",
+    "firstname",
+    "followup",
+    "followupguidance",
+    "fullname",
+    "last_name",
+    "lastname",
+    "leadprovider",
+    "leadsource",
+    "leadvendor",
+    "lotsize",
+    "marketplace",
+    "mobile",
+    "name",
+    "occupancy",
+    "occupied",
+    "phone",
+    "phonenumber",
+    "postal",
+    "postalcode",
+    "price",
+    "primaryphone",
+    "propertyaddress",
+    "propertycondition",
+    "provider",
+    "repairnotes",
+    "repairs",
+    "source",
+    "state",
+    "street",
+    "streetaddress",
+    "timeline",
+    "timelinetosell",
+    "urgent",
+    "vendor",
+    "zip",
+    "zipcode",
+  ]);
+  const uniqueContextKeys = new Set([
+    "additionalnotes",
+    "agentnotes",
+    "callnotes",
+    "comments",
+    "context",
+    "message",
+    "sellercomments",
+    "sellercontext",
+    "sellernotes",
+  ]);
+  const noisyKeyFragments = [
+    "affiliate",
+    "api",
+    "browser",
+    "campaignid",
+    "clickid",
+    "createdat",
+    "datecreated",
+    "debug",
+    "fbclid",
+    "formid",
+    "gclid",
+    "ipaddress",
+    "jornaya",
+    "leadcost",
+    "leadid",
+    "metadata",
+    "requestid",
+    "session",
+    "sourceurl",
+    "token",
+    "tracking",
+    "trustedform",
+    "updatedat",
+    "utm",
+    "webhook",
+    "zapier",
+  ];
+  const lowValueAnswers = new Set([
+    "",
+    "n/a",
+    "na",
+    "none",
+    "no answer",
+    "not answered",
+    "unknown",
+    "not applicable",
+    "null",
+    "undefined",
+  ]);
+  const genericPropertyValues = new Set([
+    "average",
+    "excellent",
+    "fair",
+    "good",
+    "needs work",
+    "poor",
+    "unknown",
+  ]);
+  const normalizeKey = (key) => String(key || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const cleanValue = (value) => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") return "";
+    return String(value).trim().replace(/\s+/g, " ");
+  };
+  const normalizeValue = (value) => cleanValue(value).toLowerCase().replace(/\s+/g, " ").trim();
+  const normalizeComparable = (value) => normalizeValue(value).replace(/[^a-z0-9]/g, "");
+  const isLowValue = (value) => {
+    const normalized = normalizeValue(value);
+    const compact = normalizeComparable(value);
+    return lowValueAnswers.has(normalized) || lowValueAnswers.has(compact);
+  };
+  const labelizeKey = (key) =>
+    String(key || "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+  const structuredValues = new Set(
+    [
+      structuredData.name,
+      structuredData.phone,
+      structuredData.email,
+      structuredData.property_address,
+      structuredData.city,
+      structuredData.state,
+      structuredData.postal_code,
+      structuredData.asking_price,
+      structuredData.timeline,
+      structuredData.motivation,
+      structuredData.condition,
+      structuredData.occupancy,
+      structuredData.mortgage,
+      structuredData.contact_preferences,
+      structuredData.contact_source,
+      structuredData.source,
+    ]
+      .map((value) => normalizeComparable(value))
+      .filter(Boolean)
+  );
+  const collectEntries = (value, entries = []) => {
+    if (value === null || value === undefined) return entries;
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectEntries(item, entries));
+      return entries;
+    }
+    if (typeof value === "object") {
+      Object.entries(value).forEach(([key, entryValue]) => {
+        if (entryValue !== null && typeof entryValue === "object") {
+          collectEntries(entryValue, entries);
+          return;
+        }
+        entries.push({ key, value: entryValue });
+      });
+    }
+    return entries;
+  };
+  const entries = [
+    ...collectEntries(normalizedPayload.unmapped_data || {}),
+    ...collectEntries(normalizedPayload.raw_webhook_payload || {}),
+  ];
+  const noteLines = [];
+  const seen = new Set();
+
+  entries.forEach(({ key, value }) => {
+    const normalizedKey = normalizeKey(key);
+    const cleanedValue = cleanSpeedToLeadRecommendedScript(cleanValue(value));
+    const comparableValue = normalizeComparable(cleanedValue);
+
+    if (!cleanedValue || isLowValue(cleanedValue) || seen.has(comparableValue)) return;
+    if (!uniqueContextKeys.has(normalizedKey)) return;
+    if (directNoteKeys.has(normalizedKey)) return;
+    if (noisyKeyFragments.some((fragment) => normalizedKey.includes(fragment))) return;
+    if (structuredValues.has(comparableValue)) return;
+    if (genericPropertyValues.has(normalizeValue(cleanedValue))) return;
+
+    seen.add(comparableValue);
+    noteLines.push(`- ${labelizeKey(key)}: ${cleanedValue}`);
+  });
+
+  return noteLines.length ? `Seller Context:\n${noteLines.join("\n")}` : "";
 }
 
 function buildOutboundCrmPayload(normalizedPayload) {
@@ -882,9 +1237,17 @@ function buildOutboundCrmPayload(normalizedPayload) {
     state: structuredData.state || "",
     postal_code: structuredData.postal_code || "",
     contact_source: structuredData.contact_source || "",
+    occupancy: structuredData.occupancy || "",
+    timeline_to_sell: structuredData.timeline || "",
+    motivation_level: structuredData.motivation || "",
     data_quality_score: normalizedPayload.data_quality_score || 0,
-    notes: buildAcquisitionsCrmNote(normalizedPayload),
+    notes: buildUniqueSellerContextNote(normalizedPayload),
   };
+
+  const motivationFieldKey = process.env.CRM_MOTIVATION_FIELD_KEY || "";
+  if (motivationFieldKey && structuredData.motivation) {
+    crmPayload[motivationFieldKey] = structuredData.motivation;
+  }
 
   return crmPayload;
 }
@@ -1108,6 +1471,7 @@ if (require.main === module) {
 module.exports = {
   app,
   buildOutboundCrmPayload,
+  buildUniqueSellerContextNote,
   handleMarkIntakeEventProcessed,
   handlePendingIntakeEvents,
   isAuthorizedIntakeQueueRequest,
